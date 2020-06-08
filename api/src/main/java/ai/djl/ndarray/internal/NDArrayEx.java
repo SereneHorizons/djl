@@ -294,6 +294,7 @@ public interface NDArrayEx {
             NDList inputs,
             float probability,
             int[] sharedAxes,
+            boolean training,
             PairList<String, Object> additional);
 
     NDList batchNorm(
@@ -303,6 +304,7 @@ public interface NDArrayEx {
             int axis,
             boolean center,
             boolean scale,
+            boolean training,
             PairList<String, Object> additional);
 
     /**

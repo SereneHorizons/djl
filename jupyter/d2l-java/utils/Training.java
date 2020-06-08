@@ -9,7 +9,7 @@ class Training {
         return (yHat.sub(y.reshape(yHat.getShape()))).mul 
             ((yHat.sub(y.reshape(yHat.getShape())))).div(2);
     }
-    
+
     public static void sgd(NDList params, float lr, int batchSize) {
         for (int i = 0; i < params.size(); i++) {
             NDArray param = params.get(i);

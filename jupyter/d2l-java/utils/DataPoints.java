@@ -2,11 +2,12 @@ import ai.djl.ndarray.*;
 
 class DataPoints {
     private NDArray X, y;
+
     public DataPoints(NDArray X, NDArray y) {
         this.X = X;
         this.y = y;
     }
-    
+
     public NDArray getX() {
         return X;
     }
@@ -14,7 +15,7 @@ class DataPoints {
     public NDArray getY() {
         return y;
     }
-    
+
     // Generate y = X w + b + noise
     public static DataPoints syntheticData(NDManager manager, NDArray w, float b, int numExamples) {
         NDArray X = manager.randomNormal(new Shape(numExamples, w.size()));

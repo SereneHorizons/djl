@@ -165,7 +165,11 @@ final class PyTorchLibrary {
             long[] maxIndices,
             long[] stepIndices);
 
+    native void torchSet(Pointer selfHandle, Pointer otherHandle);
+
     native Pointer torchSlice(Pointer handle, long dim, long start, long end, long step);
+
+    native Pointer torchGather(Pointer handle, Pointer index, long dim, boolean sparseGrad);
 
     native Pointer torchMaskedSelect(Pointer handle, Pointer maskHandle);
 
@@ -263,6 +267,8 @@ final class PyTorchLibrary {
 
     native Pointer torchSigmoid(Pointer handle);
 
+    native Pointer torchWhere(Pointer handle, Pointer x, Pointer y);
+
     native Pointer torchAll(Pointer self);
 
     native Pointer torchAny(Pointer self);
@@ -328,6 +334,8 @@ final class PyTorchLibrary {
             int numGroup,
             boolean bias);
 
+    native Pointer torchNNDropout(Pointer inputHandle, double probability, boolean isTrain);
+
     native Pointer torchNNBatchNorm(
             Pointer inputHandle,
             Pointer weigthHandle,
@@ -369,7 +377,8 @@ final class PyTorchLibrary {
 
     native Pointer torchDetachGrad(Pointer inputHandle);
 
-    native void torchBackward(Pointer inputHandle, boolean keepGraph, boolean createGraph);
+    native void torchBackward(
+            Pointer inputHandle, Pointer gradHandle, boolean keepGraph, boolean createGraph);
 
     native Pointer moduleLoad(String path, int[] device);
 
@@ -404,4 +413,27 @@ final class PyTorchLibrary {
     native boolean iValueIsMap(Pointer iValueHandle);
 
     native boolean iValueIsTuple(Pointer iValueHandle);
+
+    native void adamUpdate(
+            Pointer weight,
+            Pointer grad,
+            Pointer mean,
+            Pointer variance,
+            float lr,
+            float wd,
+            float rescaleGrad,
+            float clipGrad,
+            float beta1,
+            float beta2,
+            float eps);
+
+    native void sgdUpdate(
+            Pointer weight,
+            Pointer grad,
+            Pointer state,
+            float lr,
+            float wd,
+            float rescaleGrad,
+            float clipGrad,
+            float momentum);
 }
