@@ -11,7 +11,7 @@ class DataPoints {
     public NDArray getX() {
         return X;
     }
-    
+
     public NDArray getY() {
         return y;
     }
