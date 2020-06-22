@@ -1,0 +1,28 @@
+group "ai.djl.onnxruntime"
+
+dependencies {
+    api project(":api")
+    api project(":onnxruntime:onnxruntime-api")
+    implementation fileTree(dir: "libs", include: "*.jar")
+
+    testImplementation("org.testng:testng:${testng_version}") {
+        exclude group: "junit", module: "junit"
+    }
+
+    testImplementation "org.slf4j:slf4j-simple:${slf4j_version}"
+}
+
+compileJava.dependsOn ":onnxruntime:onnxruntime-api:jar"
+
+publishing {
+    publications {
+        maven(MavenPublication) {
+            artifactId "onnxruntime-engine"
+            pom {
+                name = "ONNX Runtime Engine Adapter"
+                description = "ONNX Runtime Engine Adapter for DJL"
+                url = "http://www.djl.ai/onnxruntime/${project.name}"
+            }
+        }
+    }
+}

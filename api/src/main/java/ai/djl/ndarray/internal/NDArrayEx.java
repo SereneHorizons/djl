@@ -15,6 +15,7 @@ package ai.djl.ndarray.internal;
 import ai.djl.ndarray.NDArray;
 import ai.djl.ndarray.NDList;
 import ai.djl.ndarray.NDManager;
+import ai.djl.ndarray.index.NDArrayIndexer;
 import ai.djl.ndarray.types.DataType;
 import ai.djl.ndarray.types.Shape;
 import ai.djl.nn.Activation;
@@ -396,19 +397,26 @@ public interface NDArrayEx {
     }
 
     default NDArray toTensor() {
-        NDArray array = getArray();
-        int dim = array.getShape().dimension();
-        if (dim == 3) {
-            array = array.expandDims(0);
+        try (NDManager subManager = getArray().getManager().newSubManager()) {
+            NDArray array = getArray();
+            NDArray result = array;
+            result.attach(subManager);
+            int dim = result.getShape().dimension();
+            if (dim == 3) {
+                result = result.expandDims(0);
+            }
+            result = result.div(255.0).transpose(0, 3, 1, 2);
+            if (dim == 3) {
+                result = result.squeeze(0);
+            }
+            // The network by default takes float32
+            if (!result.getDataType().equals(DataType.FLOAT32)) {
+                result = result.toType(DataType.FLOAT32, false);
+            }
+            array.attach(subManager.getParentManager());
+            result.attach(subManager.getParentManager());
+            return result;
         }
-        array = array.div(255.0).transpose(0, 3, 1, 2);
-        if (dim == 3) {
-            array = array.squeeze(0);
-        }
-        // The network by default takes float32
-        return (!array.getDataType().equals(DataType.FLOAT32))
-                ? array.toType(DataType.FLOAT32, false)
-                : array;
     }
 
     NDArray resize(int width, int height);
@@ -433,6 +441,13 @@ public interface NDArrayEx {
     ////////////////////////////////////////
     // Miscellaneous
     ////////////////////////////////////////
+
+    /**
+     * Returns an {@link NDArrayIndexer}.
+     *
+     * @return an {@link NDArrayIndexer}
+     */
+    NDArrayIndexer getIndexer();
 
     /**
      * Picks elements from an input array according to the input indices along the given axis.

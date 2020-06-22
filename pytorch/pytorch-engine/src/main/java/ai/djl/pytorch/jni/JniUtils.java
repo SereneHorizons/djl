@@ -570,6 +570,15 @@ public final class JniUtils {
                 .create(PyTorchLibrary.LIB.torchSum(ndArray.getHandle(), dims, keepDim));
     }
 
+    public static PtNDArray prod(PtNDArray ndArray) {
+        return ndArray.getManager().create(PyTorchLibrary.LIB.torchProd(ndArray.getHandle()));
+    }
+
+    public static PtNDArray prod(PtNDArray ndArray, long dim, boolean keepDim) {
+        return ndArray.getManager()
+                .create(PyTorchLibrary.LIB.torchProd(ndArray.getHandle(), dim, keepDim));
+    }
+
     public static PtNDArray cumSum(PtNDArray ndArray, long dim) {
         return ndArray.getManager()
                 .create(PyTorchLibrary.LIB.torchCumSum(ndArray.getHandle(), dim));
@@ -1003,7 +1012,7 @@ public final class JniUtils {
         PyTorchLibrary.LIB.torchDeleteTensor(handle);
     }
 
-    public static boolean checkGradient(PtNDArray ndArray) {
+    public static boolean requiresGrad(PtNDArray ndArray) {
         return PyTorchLibrary.LIB.torchRequiresGrad(ndArray.getHandle());
     }
 
@@ -1051,6 +1060,10 @@ public final class JniUtils {
 
     public static void enableTrainingMode(PtSymbolBlock block) {
         PyTorchLibrary.LIB.moduleTrain(block.getHandle());
+    }
+
+    public static void zeroGrad(PtNDArray weight) {
+        PyTorchLibrary.LIB.zeroGrad(weight.getHandle());
     }
 
     public static void adamUpdate(

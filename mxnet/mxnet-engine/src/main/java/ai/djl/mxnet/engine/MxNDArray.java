@@ -19,11 +19,6 @@ import ai.djl.ndarray.LazyNDArray;
 import ai.djl.ndarray.NDArray;
 import ai.djl.ndarray.NDList;
 import ai.djl.ndarray.NDManager;
-import ai.djl.ndarray.NDUtils;
-import ai.djl.ndarray.index.NDIndex;
-import ai.djl.ndarray.index.NDIndexBooleans;
-import ai.djl.ndarray.index.NDIndexElement;
-import ai.djl.ndarray.index.NDIndexFullSlice;
 import ai.djl.ndarray.internal.NDArrayEx;
 import ai.djl.ndarray.types.DataType;
 import ai.djl.ndarray.types.Shape;
@@ -37,9 +32,6 @@ import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.nio.LongBuffer;
 import java.util.Arrays;
-import java.util.List;
-import java.util.Stack;
-import java.util.function.Predicate;
 import java.util.stream.IntStream;
 
 /** {@code MxNDArray} is the MXNet implementation of {@link NDArray}. */
@@ -55,6 +47,9 @@ public class MxNDArray extends NativeResource implements LazyNDArray {
     private SparseFormat sparseFormat;
     private DataType dataType;
     private Shape shape;
+    // use Boolean object to maintain three status: false, true
+    // and null which means the flag is not set by the native engine yet
+    private Boolean hasGradient;
     private MxNDManager manager;
     private MxNDArrayEx mxNDArrayEx;
 
@@ -70,8 +65,15 @@ public class MxNDArray extends NativeResource implements LazyNDArray {
      * @param device the device the new array will be located on
      * @param shape the shape of the new array
      * @param dataType the dataType of the new array
+     * @param hasGradient the gradient status of the new array
      */
-    MxNDArray(MxNDManager manager, Pointer handle, Device device, Shape shape, DataType dataType) {
+    MxNDArray(
+            MxNDManager manager,
+            Pointer handle,
+            Device device,
+            Shape shape,
+            DataType dataType,
+            boolean hasGradient) {
         this(manager, handle);
         this.device = device;
         // shape check
@@ -80,6 +82,7 @@ public class MxNDArray extends NativeResource implements LazyNDArray {
         }
         this.shape = shape;
         this.dataType = dataType;
+        this.hasGradient = hasGradient;
     }
 
     /**
@@ -92,6 +95,7 @@ public class MxNDArray extends NativeResource implements LazyNDArray {
         super(handle);
         this.manager = manager;
         mxNDArrayEx = new MxNDArrayEx(this);
+        manager.attach(getUid(), this);
     }
 
     /**
@@ -230,23 +234,20 @@ public class MxNDArray extends NativeResource implements LazyNDArray {
     /** {@inheritDoc} */
     @Override
     public void attachGradient() {
-        attachGradient(GradReq.WRITE, null);
+        attachGradient(null);
     }
 
     /** {@inheritDoc} */
     @Override
     public void attachGradient(SparseFormat sparseFormat) {
-        attachGradient(GradReq.WRITE, sparseFormat);
-    }
-
-    private void attachGradient(GradReq gradReq, SparseFormat format) {
-        // Does zerosLike support sparse?
-        try (MxNDArray grad = createGradient(format)) {
-            int gradReqValue = gradReq.getValue();
+        try (MxNDArray grad = createGradient(sparseFormat)) {
+            // DJL go with write as only MXNet support GradReq
+            int gradReqValue = GradReq.WRITE.getValue();
             IntBuffer gradReqBuffer = IntBuffer.allocate(1);
             gradReqBuffer.put(0, gradReqValue);
             JnaUtils.autogradMarkVariables(1, getHandle(), gradReqBuffer, grad.getHandle());
         }
+        hasGradient = true;
     }
 
     private MxNDArray createGradient(SparseFormat format) {
@@ -262,13 +263,23 @@ public class MxNDArray extends NativeResource implements LazyNDArray {
     /** {@inheritDoc} */
     @Override
     public NDArray getGradient() {
-        Pointer pointer = JnaUtils.getGradient(getHandle());
-        if (pointer == null) {
+        if (!hasGradient()) {
             throw new IllegalStateException(
-                    "No gradient attached to this NDArray, please call array.attachGradient()"
+                    "No gradient attached to this NDArray, please call array.requiredGradient()"
                             + "on your NDArray or block.setInitializer() on your Block");
         }
+        Pointer pointer = JnaUtils.getGradient(getHandle());
         return manager.create(pointer);
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public boolean hasGradient() {
+        if (hasGradient == null) {
+            Pointer pointer = JnaUtils.getGradient(getHandle());
+            hasGradient = pointer != null;
+        }
+        return hasGradient;
     }
 
     /** {@inheritDoc} */
@@ -323,123 +334,6 @@ public class MxNDArray extends NativeResource implements LazyNDArray {
                 throw new AssertionError("Show never happen");
         }
         JnaUtils.syncCopyFromCPU(getHandle(), buf, size);
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    public void set(NDIndex index, NDArray value) {
-        NDIndexFullSlice fullSlice = index.getAsFullSlice(getShape()).orElse(null);
-        if (fullSlice != null) {
-            MxOpParams params = new MxOpParams();
-            params.addTupleParam("begin", fullSlice.getMin());
-            params.addTupleParam("end", fullSlice.getMax());
-            params.addTupleParam("step", fullSlice.getStep());
-
-            Stack<NDArray> prepareValue = new Stack<>();
-            prepareValue.add(value);
-            prepareValue.add(prepareValue.peek().toDevice(getDevice(), false));
-            // prepareValue.add(prepareValue.peek().asType(getDataType(), false));
-            // Deal with the case target: (1, 10, 1), original (10)
-            // try to find (10, 1) and reshape (10) to that
-            Shape targetShape = fullSlice.getShape();
-            while (targetShape.size() > value.size()) {
-                targetShape = targetShape.slice(1);
-            }
-            prepareValue.add(prepareValue.peek().reshape(targetShape));
-            prepareValue.add(prepareValue.peek().broadcast(fullSlice.getShape()));
-
-            manager.invoke(
-                    "_npi_slice_assign",
-                    new NDArray[] {this, prepareValue.peek()},
-                    new NDArray[] {this},
-                    params);
-            for (NDArray toClean : prepareValue) {
-                if (toClean != value) {
-                    toClean.close();
-                }
-            }
-            return;
-        }
-        throw new UnsupportedOperationException(
-                "set() currently supports all, fixed, and slices indices");
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    public void set(NDIndex index, Number value) {
-        NDIndexFullSlice fullSlice = index.getAsFullSlice(getShape()).orElse(null);
-        if (fullSlice != null) {
-            MxOpParams params = new MxOpParams();
-            params.addTupleParam("begin", fullSlice.getMin());
-            params.addTupleParam("end", fullSlice.getMax());
-            params.addTupleParam("step", fullSlice.getStep());
-            params.addParam("scalar", value);
-            manager.invoke(
-                    "_npi_slice_assign_scalar", new NDArray[] {this}, new NDArray[] {this}, params);
-            return;
-        }
-        throw new UnsupportedOperationException(
-                "set() currently supports all, fixed, and slices indices");
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    public void setScalar(NDIndex index, Number value) {
-        NDIndexFullSlice fullSlice = index.getAsFullSlice(getShape()).orElse(null);
-        if (fullSlice != null) {
-            if (fullSlice.getShape().size() != 1) {
-                throw new IllegalArgumentException("The provided index does not set a scalar");
-            }
-            set(index, value);
-            return;
-        }
-        throw new UnsupportedOperationException(
-                "set() currently supports all, fixed, and slices indices");
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    public NDArray get(NDIndex index) {
-        if (index.getRank() == 0 && getShape().isScalar()) {
-            // TODO: return a view once MXNet support it
-            return duplicate();
-        }
-        // use booleanMask for NDIndexBooleans case
-        List<NDIndexElement> indices = index.getIndices();
-        if (!indices.isEmpty() && indices.get(0) instanceof NDIndexBooleans) {
-            if (indices.size() != 1) {
-                throw new IllegalArgumentException(
-                        "get() currently didn't support more that one boolean NDArray");
-            }
-            return booleanMask(((NDIndexBooleans) indices.get(0)).getIndex());
-        }
-
-        NDIndexFullSlice fullSlice = index.getAsFullSlice(getShape()).orElse(null);
-        if (fullSlice != null) {
-            MxOpParams params = new MxOpParams();
-            params.addTupleParam("begin", fullSlice.getMin());
-            params.addTupleParam("end", fullSlice.getMax());
-            params.addTupleParam("step", fullSlice.getStep());
-            // TODO cast the boolean NDArray back to int32 due to lack of support of slice op on
-            // boolean NDArray
-            NDArray thisArr =
-                    (getDataType() == DataType.BOOLEAN) ? toType(DataType.INT32, false) : this;
-            NDArray result = manager.invoke("_npi_slice", thisArr, params);
-            if (!fullSlice.getToSqueeze().isEmpty()) {
-                NDArray oldResult = result;
-                result =
-                        result.squeeze(
-                                fullSlice.getToSqueeze().stream().mapToInt(i -> i).toArray());
-                oldResult.close();
-            }
-            // TODO cast the boolean NDArray back to int32 due to lack of support of slice op on
-            // boolean NDArray
-            return (getDataType() == DataType.BOOLEAN)
-                    ? result.toType(DataType.BOOLEAN, false)
-                    : result;
-        }
-        throw new UnsupportedOperationException(
-                "get() currently supports all, fixed, and slices indices");
     }
 
     /** {@inheritDoc} */
@@ -551,9 +445,9 @@ public class MxNDArray extends NativeResource implements LazyNDArray {
 
     /** {@inheritDoc} */
     @Override
-    public NDArray eq(Number other) {
+    public NDArray eq(Number n) {
         MxOpParams params = new MxOpParams();
-        params.add("scalar", other.toString());
+        params.add("scalar", n.toString());
         return manager.invoke("_npi_equal_scalar", this, params);
     }
 
@@ -1169,18 +1063,7 @@ public class MxNDArray extends NativeResource implements LazyNDArray {
 
     /** {@inheritDoc} */
     @Override
-    public NDArray reshapeLike(NDArray array) {
-        MxOpParams params = new MxOpParams();
-        return manager.invoke("_npx_reshape_like", new NDList(this, array), params)
-                .singletonOrThrow();
-    }
-
-    /** {@inheritDoc} */
-    @Override
     public NDArray expandDims(int axis) {
-        if (isScalar()) {
-            return reshape(1);
-        }
         MxOpParams params = new MxOpParams();
         params.addParam("axis", axis);
         return manager.invoke("_npi_expand_dims", this, params);
@@ -1255,73 +1138,46 @@ public class MxNDArray extends NativeResource implements LazyNDArray {
         params.addParam("axis", axis);
         // be careful that MXNet numpy argsort op didn't officially support this param
         params.addParam("is_ascend", ascending);
-        params.setDataType(DataType.INT32);
-        return manager.invoke("argsort", this, params).toType(DataType.INT64, false);
+        params.setDataType(DataType.INT64);
+        return manager.invoke("_npi_argsort", this, params);
     }
 
     /** {@inheritDoc} */
     @Override
     public NDArray sort(int axis) {
-        // TODO remove scalar, zero-dim check once MXNet support it
-        if (isEmpty() || isScalar()) {
-            long dim = getShape().dimension();
-            if (axis >= dim) {
-                throw new IllegalArgumentException(
-                        "axis " + axis + "is out of bounds for array of dimension " + dim);
-            }
-            return duplicate();
-        }
-
         MxOpParams params = new MxOpParams();
         params.addParam("axis", axis);
-        return manager.invoke("sort", this, params);
+        return manager.invoke("_npi_sort", this, params);
     }
 
     /** {@inheritDoc} */
     @Override
     public NDArray sort() {
-        if (isEmpty() || isScalar()) {
-            return duplicate();
-        }
-        return manager.invoke("sort", this, null);
+        return manager.invoke("_npi_sort", this, null);
     }
 
     /** {@inheritDoc} */
     @Override
-    public NDArray softmax(int[] axes, float temperature) {
-        return softmaxHelper(axes, temperature, "_npx_softmax");
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    public NDArray logSoftmax(int[] axes, float temperature) {
-        return softmaxHelper(axes, temperature, "_npx_log_softmax");
-    }
-
-    private NDArray softmaxHelper(int[] axes, double temperature, String opName) {
-        // TODO remove this after MXNet softmax fix zero-dim issue
+    public NDArray softmax(int axis) {
+        // MXNet softmax op bug on GPU
         if (isEmpty()) {
-            return getManager().create(getShape());
+            return manager.create(getShape());
         }
         MxOpParams params = new MxOpParams();
-        if (axes.length != 1) {
-            long size = shape.size(axes);
-            NDArray transposed = transpose(axes);
-            Shape transposedShape = transposed.getShape();
-            Shape sliced = transposed.getShape().slice(axes.length);
-            NDArray array = transposed.reshape(new Shape(size).addAll(sliced));
-            params.addParam("axis", 0);
-            if (temperature != 1.0) {
-                params.addParam("temperature", temperature);
-            }
-            return manager.invoke(opName, array, params).reshape(transposedShape).transpose(axes);
-        } else {
-            params.addParam("axis", axes[0]);
-            if (temperature != 1.0) {
-                params.addParam("temperature", temperature);
-            }
-            return manager.invoke(opName, this, params);
+        params.addParam("axis", axis);
+        return manager.invoke("_npx_softmax", this, params);
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public NDArray logSoftmax(int axis) {
+        // MXNet logsoftmax op bug on GPU
+        if (isEmpty()) {
+            return manager.create(getShape());
         }
+        MxOpParams params = new MxOpParams();
+        params.addParam("axis", axis);
+        return manager.invoke("_npx_log_softmax", this, params);
     }
 
     /** {@inheritDoc} */
@@ -1347,19 +1203,7 @@ public class MxNDArray extends NativeResource implements LazyNDArray {
     /** {@inheritDoc} */
     @Override
     public NDArray isNaN() {
-        return manager.invoke("_npi_not_equal", new NDArray[] {this, this}, null);
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    public NDArray createMask(NDIndex index) {
-        throw new UnsupportedOperationException("Not implemented yet.");
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    public NDArray createMask(Predicate<Number> predicate) {
-        return null;
+        return manager.invoke("_npi_isnan", this, null);
     }
 
     /** {@inheritDoc} */
@@ -1531,57 +1375,35 @@ public class MxNDArray extends NativeResource implements LazyNDArray {
     /** {@inheritDoc} */
     @Override
     public NDArray argMax() {
-        // TODO MXNet engine bug
         if (isEmpty()) {
             throw new IllegalArgumentException("attempt to get argMax of an empty NDArray");
         }
-        return manager.invoke("_npi_argmax", this, null).toType(DataType.INT64, false);
+        return manager.invoke("_npi_argmax", this, null);
     }
 
     /** {@inheritDoc} */
     @Override
     public NDArray argMax(int axis) {
-        if (isEmpty()) {
-            Shape newShape = NDUtils.getShapeFromEmptyNDArrayForReductionOp(getShape(), axis);
-            return manager.create(newShape, DataType.INT64);
-        }
         MxOpParams params = new MxOpParams();
         params.addParam("axis", axis);
-        // TODO MXNet engine bug
-        return manager.invoke("_npi_argmax", this, params).toType(DataType.INT64, false);
+        return manager.invoke("_npi_argmax", this, params);
     }
 
     /** {@inheritDoc} */
     @Override
     public NDArray argMin() {
-        // TODO switch to MXNet numpy argmin
         if (isEmpty()) {
             throw new IllegalArgumentException("attempt to get argMin of an empty NDArray");
         }
-        NDArray array = (isScalar()) ? reshape(1) : this;
-        try (NDArray temp = manager.invoke("argmin", array, null).toType(DataType.INT64, false)) {
-            return temp.reshape(new Shape());
-        }
+        return manager.invoke("_npi_argmin", this, null);
     }
 
     /** {@inheritDoc} */
     @Override
     public NDArray argMin(int axis) {
-        // TODO switch to MXNet numpy argmin
-        if (isEmpty()) {
-            Shape newShape = NDUtils.getShapeFromEmptyNDArrayForReductionOp(getShape(), axis);
-            return manager.create(newShape, DataType.INT64);
-        }
-        NDArray array = (isScalar()) ? reshape(1) : this;
         MxOpParams params = new MxOpParams();
         params.addParam("axis", axis);
-        NDArray temp = manager.invoke("argmin", array, params).toType(DataType.INT64, false);
-        if (isScalar()) {
-            NDArray res = temp.reshape(new Shape());
-            temp.close();
-            return res;
-        }
-        return temp;
+        return manager.invoke("_npi_argmin", this, params);
     }
 
     /** {@inheritDoc} */

@@ -18,10 +18,6 @@ import ai.djl.ndarray.NDArray;
 import ai.djl.ndarray.NDArrays;
 import ai.djl.ndarray.NDList;
 import ai.djl.ndarray.NDManager;
-import ai.djl.ndarray.index.NDIndex;
-import ai.djl.ndarray.index.NDIndexBooleans;
-import ai.djl.ndarray.index.NDIndexElement;
-import ai.djl.ndarray.index.NDIndexFullSlice;
 import ai.djl.ndarray.internal.NDArrayEx;
 import ai.djl.ndarray.types.DataType;
 import ai.djl.ndarray.types.Shape;
@@ -34,7 +30,6 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
-import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import org.tensorflow.Operand;
@@ -64,7 +59,7 @@ public class TfNDArray implements NDArray {
     private static final int MAX_COLUMNS = 20;
     private static final int MAX_OUTPUTS_PER_OP = 8;
 
-    private String uid = UUID.randomUUID().toString();
+    private String uid;
     private Tensor<?> tensor;
     private Shape shape;
     private TfNDManager manager;
@@ -75,38 +70,24 @@ public class TfNDArray implements NDArray {
 
     TfNDArray(NDManager manager, Tensor<?> tensor) {
         this.manager = (TfNDManager) manager;
-        this.manager.attach(getUid(), this);
         this.tensor = tensor;
         this.shape = new Shape(tensor.shape().asArray());
         this.tf = this.manager.getTf();
         tfNDArrayEx = new TfNDArrayEx(this);
+        uid = UUID.randomUUID().toString();
+        manager.attach(uid, this);
     }
 
     TfNDArray(NDManager manager, Operand<?> out) {
-        this.manager = (TfNDManager) manager;
-        this.manager.attach(getUid(), this);
-        this.tensor = out.asOutput().tensor();
-        this.shape = new Shape(tensor.shape().asArray());
-        this.tf = this.manager.getTf();
-        tfNDArrayEx = new TfNDArrayEx(this);
+        this(manager, out.asOutput().tensor());
     }
 
     public TfNDArray(NDManager manager, Shape shape, FloatBuffer data) {
-        this.manager = (TfNDManager) manager;
-        this.manager.attach(getUid(), this);
-        tensor = Tensor.of(TFloat32.DTYPE, toTfShape(shape), toDataBuffer(data));
-        this.shape = shape;
-        this.tf = this.manager.getTf();
-        tfNDArrayEx = new TfNDArrayEx(this);
+        this(manager, Tensor.of(TFloat32.DTYPE, toTfShape(shape), toDataBuffer(data)));
     }
 
     TfNDArray(NDManager manager, Shape shape, ByteBuffer data) {
-        this.manager = (TfNDManager) manager;
-        this.manager.attach(getUid(), this);
-        this.shape = shape;
-        this.tf = this.manager.getTf();
-        tensor = Tensor.of(TUint8.DTYPE, toTfShape(shape), DataBuffers.of(data));
-        tfNDArrayEx = new TfNDArrayEx(this);
+        this(manager, Tensor.of(TUint8.DTYPE, toTfShape(shape), DataBuffers.of(data)));
     }
 
     /** {@inheritDoc} */
@@ -203,6 +184,12 @@ public class TfNDArray implements NDArray {
 
     /** {@inheritDoc} */
     @Override
+    public boolean hasGradient() {
+        return false;
+    }
+
+    /** {@inheritDoc} */
+    @Override
     public double[] toDoubleArray() {
         double[] result = new double[(int) getShape().size()];
         tensor.rawData().asDoubles().read(result);
@@ -261,61 +248,17 @@ public class TfNDArray implements NDArray {
 
     /** {@inheritDoc} */
     @Override
-    public void set(NDIndex index, NDArray value) {
-        throw new UnsupportedOperationException("Tensor cannot be modified after creation");
+    public void attach(NDManager manager) {
+        detach();
+        this.manager = (TfNDManager) manager;
+        manager.attach(uid, this);
     }
 
     /** {@inheritDoc} */
     @Override
-    public void set(NDIndex index, Number value) {
-        throw new UnsupportedOperationException("Tensor cannot be modified after creation");
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    public void setScalar(NDIndex index, Number value) {
-        throw new UnsupportedOperationException("Tensor cannot be modified after creation");
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    public NDArray get(NDIndex index) {
-        if (index.getRank() == 0 && getShape().isScalar()) {
-            return this;
-        }
-        // use booleanMask for NDIndexBooleans case
-        List<NDIndexElement> indices = index.getIndices();
-        if (!indices.isEmpty() && indices.get(0) instanceof NDIndexBooleans) {
-            if (indices.size() != 1) {
-                throw new IllegalArgumentException(
-                        "get() currently didn't support more that one boolean NDArray");
-            }
-            return booleanMask(((NDIndexBooleans) indices.get(0)).getIndex());
-        }
-
-        NDIndexFullSlice fullSlice = index.getAsFullSlice(getShape()).orElse(null);
-        if (fullSlice != null) {
-            long[] begin = fullSlice.getMin();
-            long[] end = fullSlice.getMax();
-            long[] step = fullSlice.getStep();
-            Operand<?> sliced =
-                    tf.stridedSlice(
-                            asOperand(), tf.constant(begin), tf.constant(end), tf.constant(step));
-            if (!fullSlice.getToSqueeze().isEmpty()) {
-                sliced =
-                        tf.squeeze(
-                                sliced,
-                                Squeeze.axis(
-                                        fullSlice
-                                                .getToSqueeze()
-                                                .stream()
-                                                .map(Integer::longValue)
-                                                .collect(Collectors.toList())));
-            }
-            return new TfNDArray(manager, sliced);
-        }
-        throw new UnsupportedOperationException(
-                "get() currently supports all, fixed, and slices indices");
+    public void detach() {
+        manager.detach(getUid());
+        manager = TfNDManager.getSystemManager();
     }
 
     /** {@inheritDoc} */
@@ -409,8 +352,10 @@ public class TfNDArray implements NDArray {
 
     /** {@inheritDoc} */
     @Override
-    public NDArray eq(Number other) {
-        return eq(manager.create(other).toType(getDataType(), false));
+    public NDArray eq(Number n) {
+        try (NDArray number = manager.create(n).toType(getDataType(), false)) {
+            return eq(number);
+        }
     }
 
     /** {@inheritDoc} */
@@ -422,8 +367,10 @@ public class TfNDArray implements NDArray {
 
     /** {@inheritDoc} */
     @Override
-    public NDArray neq(Number other) {
-        return neq(manager.create(other).toType(getDataType(), false));
+    public NDArray neq(Number n) {
+        try (NDArray number = manager.create(n).toType(getDataType(), false)) {
+            return neq(number);
+        }
     }
 
     /** {@inheritDoc} */
@@ -435,8 +382,10 @@ public class TfNDArray implements NDArray {
 
     /** {@inheritDoc} */
     @Override
-    public NDArray gt(Number other) {
-        return gt(manager.create(other).toType(getDataType(), false));
+    public NDArray gt(Number n) {
+        try (NDArray number = manager.create(n).toType(getDataType(), false)) {
+            return gt(number);
+        }
     }
 
     /** {@inheritDoc} */
@@ -448,8 +397,10 @@ public class TfNDArray implements NDArray {
 
     /** {@inheritDoc} */
     @Override
-    public NDArray gte(Number other) {
-        return gte(manager.create(other).toType(getDataType(), false));
+    public NDArray gte(Number n) {
+        try (NDArray number = manager.create(n).toType(getDataType(), false)) {
+            return gte(number);
+        }
     }
 
     /** {@inheritDoc} */
@@ -462,8 +413,10 @@ public class TfNDArray implements NDArray {
 
     /** {@inheritDoc} */
     @Override
-    public NDArray lt(Number other) {
-        return lt(manager.create(other).toType(getDataType(), false));
+    public NDArray lt(Number n) {
+        try (NDArray number = manager.create(n).toType(getDataType(), false)) {
+            return lt(number);
+        }
     }
 
     /** {@inheritDoc} */
@@ -475,8 +428,10 @@ public class TfNDArray implements NDArray {
 
     /** {@inheritDoc} */
     @Override
-    public NDArray lte(Number other) {
-        return lte(manager.create(other).toType(getDataType(), false));
+    public NDArray lte(Number n) {
+        try (NDArray number = manager.create(n).toType(getDataType(), false)) {
+            return lte(number);
+        }
     }
 
     /** {@inheritDoc} */
@@ -512,7 +467,9 @@ public class TfNDArray implements NDArray {
     /** {@inheritDoc} */
     @Override
     public NDArray add(Number n) {
-        return add(manager.create(n).toType(getDataType(), false));
+        try (NDArray number = manager.create(n).toType(getDataType(), false)) {
+            return add(number);
+        }
     }
 
     /** {@inheritDoc} */
@@ -524,7 +481,9 @@ public class TfNDArray implements NDArray {
     /** {@inheritDoc} */
     @Override
     public NDArray sub(Number n) {
-        return sub(manager.create(n).toType(getDataType(), false));
+        try (NDArray number = manager.create(n).toType(getDataType(), false)) {
+            return sub(number);
+        }
     }
 
     /** {@inheritDoc} */
@@ -536,7 +495,9 @@ public class TfNDArray implements NDArray {
     /** {@inheritDoc} */
     @Override
     public NDArray mul(Number n) {
-        return mul(manager.create(n).toType(getDataType(), false));
+        try (NDArray number = manager.create(n).toType(getDataType(), false)) {
+            return mul(number);
+        }
     }
 
     /** {@inheritDoc} */
@@ -548,7 +509,9 @@ public class TfNDArray implements NDArray {
     /** {@inheritDoc} */
     @Override
     public NDArray div(Number n) {
-        return div(manager.create(n).toType(getDataType(), false));
+        try (NDArray number = manager.create(n).toType(getDataType(), false)) {
+            return div(number);
+        }
     }
 
     /** {@inheritDoc} */
@@ -560,7 +523,9 @@ public class TfNDArray implements NDArray {
     /** {@inheritDoc} */
     @Override
     public NDArray mod(Number n) {
-        return mod(manager.create(n).toType(getDataType(), false));
+        try (NDArray number = manager.create(n).toType(getDataType(), false)) {
+            return mod(number);
+        }
     }
 
     /** {@inheritDoc} */
@@ -572,7 +537,9 @@ public class TfNDArray implements NDArray {
     /** {@inheritDoc} */
     @Override
     public NDArray pow(Number n) {
-        return pow(manager.create(n).toType(getDataType(), false));
+        try (NDArray number = manager.create(n).toType(getDataType(), false)) {
+            return pow(number);
+        }
     }
 
     /** {@inheritDoc} */
@@ -584,7 +551,9 @@ public class TfNDArray implements NDArray {
     /** {@inheritDoc} */
     @Override
     public NDArray maximum(Number n) {
-        return maximum(manager.create(n).toType(getDataType(), false));
+        try (NDArray number = manager.create(n).toType(getDataType(), false)) {
+            return maximum(number);
+        }
     }
 
     /** {@inheritDoc} */
@@ -597,7 +566,9 @@ public class TfNDArray implements NDArray {
     /** {@inheritDoc} */
     @Override
     public NDArray minimum(Number n) {
-        return minimum(manager.create(n).toType(getDataType(), false));
+        try (NDArray number = manager.create(n).toType(getDataType(), false)) {
+            return minimum(number);
+        }
     }
 
     /** {@inheritDoc} */
@@ -610,7 +581,9 @@ public class TfNDArray implements NDArray {
     /** {@inheritDoc} */
     @Override
     public NDArray addi(Number n) {
-        return addi(manager.create(n).toType(getDataType(), false));
+        try (NDArray number = manager.create(n).toType(getDataType(), false)) {
+            return addi(number);
+        }
     }
 
     /** {@inheritDoc} */
@@ -622,7 +595,9 @@ public class TfNDArray implements NDArray {
     /** {@inheritDoc} */
     @Override
     public NDArray subi(Number n) {
-        return subi(manager.create(n).toType(getDataType(), false));
+        try (NDArray number = manager.create(n).toType(getDataType(), false)) {
+            return subi(number);
+        }
     }
 
     /** {@inheritDoc} */
@@ -634,7 +609,9 @@ public class TfNDArray implements NDArray {
     /** {@inheritDoc} */
     @Override
     public NDArray muli(Number n) {
-        return muli(manager.create(n).toType(getDataType(), false));
+        try (NDArray number = manager.create(n).toType(getDataType(), false)) {
+            return muli(number);
+        }
     }
 
     /** {@inheritDoc} */
@@ -646,7 +623,9 @@ public class TfNDArray implements NDArray {
     /** {@inheritDoc} */
     @Override
     public NDArray divi(Number n) {
-        return divi(manager.create(n).toType(getDataType(), false));
+        try (NDArray number = manager.create(n).toType(getDataType(), false)) {
+            return divi(number);
+        }
     }
 
     /** {@inheritDoc} */
@@ -691,7 +670,9 @@ public class TfNDArray implements NDArray {
     /** {@inheritDoc} */
     @Override
     public NDArray modi(Number n) {
-        return modi(manager.create(n).toType(getDataType(), false));
+        try (NDArray number = manager.create(n).toType(getDataType(), false)) {
+            return modi(number);
+        }
     }
 
     /** {@inheritDoc} */
@@ -703,17 +684,15 @@ public class TfNDArray implements NDArray {
     /** {@inheritDoc} */
     @Override
     public NDArray powi(Number n) {
-        return powi(manager.create(n).toType(getDataType(), false));
+        try (NDArray number = manager.create(n).toType(getDataType(), false)) {
+            return powi(number);
+        }
     }
 
     /** {@inheritDoc} */
     @Override
     public NDArray powi(NDArray other) {
         return inPlaceHelper(pow(other), this);
-    }
-
-    NDArray rpowi(NDArray other) {
-        return inPlaceHelper(other.pow(this), this);
     }
 
     /** {@inheritDoc} */
@@ -969,10 +948,9 @@ public class TfNDArray implements NDArray {
     /** {@inheritDoc} */
     @Override
     public NDArray mean() {
-        return new TfNDArray(
-                manager,
-                tf.math.mean(
-                        asOperand(), ((TfNDArray) manager.arange(0, getRank(), 1)).asOperand()));
+        try (TfNDArray array = ((TfNDArray) manager.arange(0, getRank(), 1))) {
+            return new TfNDArray(manager, tf.math.mean(asOperand(), array.asOperand()));
+        }
     }
 
     /** {@inheritDoc} */
@@ -1000,9 +978,7 @@ public class TfNDArray implements NDArray {
 
             while (start < indices.length - MAX_OUTPUTS_PER_OP + 2) {
                 long[] partialIndices = new long[MAX_OUTPUTS_PER_OP];
-                for (int i = 0; i < MAX_OUTPUTS_PER_OP - 1; i++) {
-                    partialIndices[i] = indices[start + i];
-                }
+                System.arraycopy(indices, start, partialIndices, 0, MAX_OUTPUTS_PER_OP - 1);
                 partialIndices[MAX_OUTPUTS_PER_OP - 1] = totalSize;
                 NDList splitted = splitHelper(partialIndices, axis);
                 // remove last chunk from result
@@ -1016,9 +992,7 @@ public class TfNDArray implements NDArray {
             }
 
             long[] partialIndices = new long[indices.length - start];
-            for (int i = 0; i < partialIndices.length; i++) {
-                partialIndices[i] = indices[start + i];
-            }
+            System.arraycopy(indices, start, partialIndices, 0, partialIndices.length);
             NDList splitted = splitHelper(partialIndices, axis);
             // remove the first chunk from result
             splitted.remove(splitted.get(0));
@@ -1082,12 +1056,6 @@ public class TfNDArray implements NDArray {
     @Override
     public NDArray reshape(Shape shape) {
         return new TfNDArray(manager, tf.reshape(asOperand(), tf.constant(shape.getShape())));
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    public NDArray reshapeLike(NDArray array) {
-        throw new UnsupportedOperationException("Not implemented");
     }
 
     /** {@inheritDoc} */
@@ -1218,43 +1186,31 @@ public class TfNDArray implements NDArray {
 
     /** {@inheritDoc} */
     @Override
-    public NDArray softmax(int[] axes, float temperature) {
-        if (temperature != 1.0) {
-            throw new UnsupportedOperationException(
-                    "TensorFlow softmax didn't suuport temperature");
-        }
-        return new TfNDArray(manager, softmaxHelper(axes, false));
+    public NDArray softmax(int axis) {
+        return new TfNDArray(manager, softmaxHelper(axis, false));
     }
 
     /** {@inheritDoc} */
     @Override
-    public NDArray logSoftmax(int[] axes, float temperature) {
-        if (temperature != 1.0) {
-            throw new UnsupportedOperationException(
-                    "TensorFlow softmax didn't suuport temperature");
-        }
-        return new TfNDArray(manager, softmaxHelper(axes, true));
+    public NDArray logSoftmax(int axis) {
+        return new TfNDArray(manager, softmaxHelper(axis, true));
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
-    private Operand softmaxHelper(int[] axes, boolean logSoftmax) {
+    private Operand softmaxHelper(int axis, boolean logSoftmax) {
         long dim = getShape().dimension();
         // if axis is -1 or last dim, directly apply softmax
-        if (axes.length > 1) {
-            throw new UnsupportedOperationException(
-                    "TensorFlow softmax does not support multiple axes");
-        }
         // return itself if zero dim
         if (dim == 0) {
             return asOperand();
         }
-        if (axes[0] == -1 || axes[0] == dim - 1) {
+        if (axis == -1 || axis == dim - 1) {
             return logSoftmax ? tf.nn.logSoftmax(asOperand()) : tf.nn.softmax(asOperand());
         }
-        if (axes[0] < -dim || axes[0] >= dim) {
+        if (axis < -dim || axis >= dim) {
             throw new IllegalArgumentException(
                     "Invalid axes value: "
-                            + axes[0]
+                            + axis
                             + ", must be in range ["
                             + -dim
                             + ", "
@@ -1266,11 +1222,11 @@ public class TfNDArray implements NDArray {
 
         // tf.softmax always apply on last dimension, transpose input to make axes[0] last dimension
         ArrayList<Operand<TInt64>> concatList = new ArrayList<>();
-        concatList.add(tf.range(tf.constant(0L), tf.constant(axes[0] % dim), tf.constant(1L)));
+        concatList.add(tf.range(tf.constant(0L), tf.constant(axis % dim), tf.constant(1L)));
         concatList.add(tf.expandDims(tf.constant(dim - 1), tf.constant(0)));
         concatList.add(
-                tf.range(tf.constant((long) axes[0] + 1), tf.constant(dim - 1), tf.constant(1L)));
-        concatList.add(tf.expandDims(tf.constant((long) axes[0]), tf.constant(0)));
+                tf.range(tf.constant((long) axis + 1), tf.constant(dim - 1), tf.constant(1L)));
+        concatList.add(tf.expandDims(tf.constant((long) axis), tf.constant(0)));
 
         Operand transposed =
                 tf.linalg.transpose(asOperand(), tf.concat(concatList, tf.constant(0)));
@@ -1310,18 +1266,6 @@ public class TfNDArray implements NDArray {
     @Override
     public NDArray isNaN() {
         return new TfNDArray(manager, tf.dtypes.cast(tf.math.isNan(asOperand()), TBool.DTYPE));
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    public NDArray createMask(NDIndex index) {
-        throw new UnsupportedOperationException("Not implemented");
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    public NDArray createMask(Predicate<Number> predicate) {
-        throw new UnsupportedOperationException("Not implemented");
     }
 
     /** {@inheritDoc} */
@@ -1462,7 +1406,7 @@ public class TfNDArray implements NDArray {
     @Override
     public NDArray argMax() {
         if (isEmpty()) {
-            throw new IllegalArgumentException("attempt to get argMin of an empty NDArray");
+            throw new IllegalArgumentException("attempt to get argMax of an empty NDArray");
         }
         return flatten().argMax(0);
     }

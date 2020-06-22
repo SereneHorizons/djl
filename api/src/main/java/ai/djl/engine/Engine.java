@@ -16,6 +16,7 @@ import ai.djl.Device;
 import ai.djl.Model;
 import ai.djl.ndarray.NDManager;
 import ai.djl.training.GradientCollector;
+import java.util.Collection;
 import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.concurrent.ConcurrentHashMap;
@@ -45,14 +46,18 @@ public abstract class Engine {
         for (EngineProvider provider : loaders) {
             Engine engine = provider.getEngine();
             if (engine != null) {
+                logger.debug("Engine loaded from provider: {}", engine.getEngineName());
                 if (firstEngine == null) {
                     firstEngine = engine;
                 }
                 ALL_ENGINES.put(engine.getEngineName(), engine);
+            } else {
+                logger.warn("Failed to load engine from: {}", provider.getClass().getName());
             }
         }
 
         if (firstEngine == null) {
+            logger.debug("No engine found from EngineProvider");
             return null;
         }
 
@@ -102,6 +107,15 @@ public abstract class Engine {
      */
     public static boolean hasEngine(String engineName) {
         return ALL_ENGINES.containsKey(engineName);
+    }
+
+    /**
+     * Returns a Collection of engines that are loaded.
+     *
+     * @return {@code Collection<Engine>} that are supported
+     */
+    public static Collection<Engine> getAllEngines() {
+        return ALL_ENGINES.values();
     }
 
     /**

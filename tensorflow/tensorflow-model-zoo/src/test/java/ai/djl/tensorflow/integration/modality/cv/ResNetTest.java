@@ -25,9 +25,9 @@ import ai.djl.repository.zoo.Criteria;
 import ai.djl.repository.zoo.ModelZoo;
 import ai.djl.repository.zoo.ZooModel;
 import ai.djl.training.util.ProgressBar;
-import ai.djl.translate.Pipeline;
 import ai.djl.translate.TranslateException;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import org.testng.Assert;
 import org.testng.SkipException;
@@ -41,36 +41,32 @@ public class ResNetTest {
             throw new SkipException("Tensorflow doesn't support Windows yet.");
         }
 
+        float[] mean = {103.939f, 116.779f, 123.68f};
+        float[] std = {1f, 1f, 1f};
+        ImageClassificationTranslator myTranslator =
+                ImageClassificationTranslator.builder()
+                        .addTransform(new Resize(224, 224))
+                        .addTransform(new Normalize(mean, std))
+                        .build();
+
         Criteria<Image, Classifications> criteria =
                 Criteria.builder()
                         .optApplication(Application.CV.IMAGE_CLASSIFICATION)
                         .setTypes(Image.class, Classifications.class)
+                        .optTranslator(myTranslator)
                         .optArtifactId("resnet")
                         .optFilter("layers", "50")
                         .optFilter("flavor", "v1")
                         .optProgress(new ProgressBar())
                         .build();
 
-        Pipeline pipeline = new Pipeline();
-        pipeline.add(new Resize(224, 224))
-                .add(
-                        new Normalize(
-                                new float[] {103.939f, 116.779f, 123.68f},
-                                new float[] {1f, 1f, 1f}));
-
-        ImageClassificationTranslator myTranslator =
-                ImageClassificationTranslator.builder().setPipeline(pipeline).build();
-        try (ZooModel<Image, Classifications> model = ModelZoo.loadModel(criteria)) {
-            try (Predictor<Image, Classifications> predictor = model.newPredictor(myTranslator)) {
-                Classifications result =
-                        predictor.predict(
-                                ImageFactory.getInstance()
-                                        .fromFile(
-                                                Paths.get(
-                                                        "../../examples/src/test/resources/kitten.jpg")));
-                System.out.println(result.best().getClassName());
-                Assert.assertEquals(result.best().getClassName(), "n02124075 Egyptian cat");
-            }
+        Path file = Paths.get("../../examples/src/test/resources/kitten.jpg");
+        Image img = ImageFactory.getInstance().fromFile(file);
+        try (ZooModel<Image, Classifications> model = ModelZoo.loadModel(criteria);
+                Predictor<Image, Classifications> predictor = model.newPredictor()) {
+            Classifications result = predictor.predict(img);
+            System.out.println(result.best().getClassName());
+            Assert.assertEquals(result.best().getClassName(), "n02124075 Egyptian cat");
         }
     }
 }

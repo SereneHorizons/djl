@@ -14,7 +14,9 @@ package ai.djl.pytorch.engine;
 
 import ai.djl.ndarray.NDArray;
 import ai.djl.ndarray.NDList;
+import ai.djl.ndarray.NDManager;
 import ai.djl.ndarray.NDUtils;
+import ai.djl.ndarray.index.NDArrayIndexer;
 import ai.djl.ndarray.internal.NDArrayEx;
 import ai.djl.ndarray.types.DataType;
 import ai.djl.ndarray.types.Shape;
@@ -25,6 +27,8 @@ import java.util.List;
 
 /** {@code PtNDArrayEx} is the PyTorch implementation of the {@link NDArrayEx}. */
 public class PtNDArrayEx implements NDArrayEx {
+
+    private static final NDArrayIndexer INDEXER = new PtNDArrayIndexer();
 
     private PtNDArray array;
 
@@ -272,6 +276,8 @@ public class PtNDArrayEx implements NDArrayEx {
                 beta1,
                 beta2,
                 epsilon);
+        // call zero-grad
+        JniUtils.zeroGrad((PtNDArray) weights.singletonOrThrow());
     }
 
     /** {@inheritDoc} */
@@ -308,6 +314,8 @@ public class PtNDArrayEx implements NDArrayEx {
                 rescaleGrad,
                 clipGrad,
                 momentum);
+        // call zero-grad
+        JniUtils.zeroGrad((PtNDArray) weights.singletonOrThrow());
     }
 
     /** {@inheritDoc} */
@@ -352,7 +360,9 @@ public class PtNDArrayEx implements NDArrayEx {
                         noBias);
         if (flatten) {
             long batchSize = result.getShape().get(0);
-            result = result.reshape(batchSize, outChannels);
+            NDArray reshaped = result.reshape(batchSize, outChannels);
+            result.close();
+            result = reshaped;
         }
         return new NDList(result);
     }
@@ -386,8 +396,9 @@ public class PtNDArrayEx implements NDArrayEx {
         if (sharedAxes.length != 0) {
             throw new UnsupportedOperationException("sharedAxes not supported");
         }
+        // FIXME: Hardcode training to false to workaround unexpected behavior in PyTorch
         return new NDList(
-                JniUtils.dropout((PtNDArray) inputs.singletonOrThrow(), probability, training));
+                JniUtils.dropout((PtNDArray) inputs.singletonOrThrow(), probability, false));
     }
 
     /** {@inheritDoc} */
@@ -402,6 +413,7 @@ public class PtNDArrayEx implements NDArrayEx {
             boolean training,
             PairList<String, Object> additional) {
         // TODO: axis center and scale are not used
+        // FIXME: Hardcode training to false to workaround unexpected behavior in PyTorch
         return new NDList(
                 JniUtils.batchNorm(
                         (PtNDArray) inputs.get(0),
@@ -409,7 +421,7 @@ public class PtNDArrayEx implements NDArrayEx {
                         (PtNDArray) inputs.get(2),
                         (PtNDArray) inputs.get(3),
                         (PtNDArray) inputs.get(4),
-                        training,
+                        false,
                         momentum,
                         epsilon));
     }
@@ -448,25 +460,38 @@ public class PtNDArrayEx implements NDArrayEx {
     /** {@inheritDoc} */
     @Override
     public PtNDArray resize(int width, int height) {
-        NDArray result = array;
-        if (result.isEmpty()) {
-            throw new IllegalArgumentException("attempt to resize of an empty NDArray");
+        // create subManager to help close intermediate NDArray
+        try (NDManager subManager = array.getManager().newSubManager()) {
+            array.attach(subManager);
+            NDArray result = array;
+            if (result.isEmpty()) {
+                throw new IllegalArgumentException("attempt to resize of an empty NDArray");
+            }
+            if (result.getDataType() != DataType.FLOAT32) {
+                result = result.toType(DataType.FLOAT32, true);
+            }
+            int dim = result.getShape().dimension();
+            if (dim == 3) {
+                result = result.expandDims(0);
+            }
+            result = result.transpose(0, 3, 1, 2);
+            result =
+                    JniUtils.upsampleBilinear2d(
+                                    (PtNDArray) result, new long[] {height, width}, true)
+                            .transpose(0, 2, 3, 1);
+            if (dim == 3) {
+                result = result.squeeze(0);
+            }
+            array.attach(subManager.getParentManager());
+            result.attach(subManager.getParentManager());
+            return (PtNDArray) result;
         }
-        if (result.getDataType() != DataType.FLOAT32) {
-            result = result.toType(DataType.FLOAT32, true);
-        }
-        int dim = result.getShape().dimension();
-        if (dim == 3) {
-            result = result.expandDims(0);
-        }
-        result = result.transpose(0, 3, 1, 2);
-        result =
-                JniUtils.upsampleBilinear2d((PtNDArray) result, new long[] {height, width}, true)
-                        .transpose(0, 2, 3, 1);
-        if (dim == 3) {
-            result = result.squeeze(0);
-        }
-        return (PtNDArray) result;
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public NDArrayIndexer getIndexer() {
+        return INDEXER;
     }
 
     /** {@inheritDoc} */
@@ -475,7 +500,9 @@ public class PtNDArrayEx implements NDArrayEx {
         // TODO: support multiple modes
         PtNDArray result = JniUtils.pick(array, (PtNDArray) index, axis);
         if (!keepDims) {
-            result.flatten();
+            PtNDArray flattened = result.flatten();
+            result.close();
+            result = flattened;
         }
         return result;
     }

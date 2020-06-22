@@ -14,6 +14,7 @@ on:
 
 jobs:
   build:
+    if: github.repository == 'awslabs/djl'
     runs-on: ${{ matrix.operating-system }}
     strategy:
       matrix:
@@ -80,6 +81,7 @@ jobs:
           path: mxnet/mxnet-model-zoo/build/reports
 
   test-pytorch:
+    if: github.repository == 'awslabs/djl'
     runs-on: ${{ matrix.operating-system }}
     strategy:
       matrix:
@@ -102,6 +104,7 @@ jobs:
         run: ./gradlew :integration:test "-Dai.djl.default_engine=PyTorch"
 
   test-tensorflow:
+    if: github.repository == 'awslabs/djl'
     runs-on: ${{ matrix.operating-system }}
     strategy:
       matrix:
@@ -124,6 +127,7 @@ jobs:
         run: ./gradlew :integration:test "-Dai.djl.default_engine=TensorFlow"
 
   publish:
+    if: github.repository == 'awslabs/djl'
     runs-on: ubuntu-18.04
     needs: [build, test-pytorch, test-tensorflow]
     steps:
@@ -148,6 +152,38 @@ jobs:
           ORG_GRADLE_PROJECT_ossrhPassword: ${{ secrets.ORG_GRADLE_PROJECT_ossrhPassword }}
       - name: Publish PyTorch Engine CentOS to snapshot repository
         run: ./gradlew clean :pytorch:pytorch-engine:publish -Psnapshot -Pcentos
+        env:
+          ORG_GRADLE_PROJECT_signingKey: ${{ secrets.ORG_GRADLE_PROJECT_signingKey }}
+          ORG_GRADLE_PROJECT_signingPassword: ${{ secrets.ORG_GRADLE_PROJECT_signingPassword }}
+          ORG_GRADLE_PROJECT_ossrhUsername: ${{ secrets.ORG_GRADLE_PROJECT_ossrhUsername }}
+          ORG_GRADLE_PROJECT_ossrhPassword: ${{ secrets.ORG_GRADLE_PROJECT_ossrhPassword }}
+
+  publish-android:
+    if: github.repository == 'awslabs/djl'
+    runs-on: ubuntu-18.04
+    needs: [build, test-pytorch, test-tensorflow]
+    env:
+      NDK_VERSION: "20.0.5594570"
+    steps:
+      - uses: actions/checkout@v1
+      - name: Set up JDK 1.8
+        uses: actions/setup-java@v1
+        with:
+          java-version: 1.8
+      # Enable gradle cache: https://github.com/actions/cache/blob/master/examples.md#java---gradle
+      - uses: actions/cache@v1
+        with:
+          path: ~/.gradle/caches
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+      - name: Install NDK
+        run: echo "y" | sudo ${ANDROID_HOME}/tools/bin/sdkmanager --install "ndk;${NDK_VERSION}" --sdk_root=${ANDROID_SDK_ROOT}
+      - name: publish android core package to Snapshot
+        run: |
+          export ANDROID_NDK=${ANDROID_HOME}/ndk-bundle
+          cd android
+          ./gradlew :core:publish -Psnapshot
         env:
           ORG_GRADLE_PROJECT_signingKey: ${{ secrets.ORG_GRADLE_PROJECT_signingKey }}
           ORG_GRADLE_PROJECT_signingPassword: ${{ secrets.ORG_GRADLE_PROJECT_signingPassword }}

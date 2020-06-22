@@ -1,5 +1,5 @@
 /*
- * Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
  * with the License. A copy of the License is located at
@@ -10,14 +10,13 @@
  * OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions
  * and limitations under the License.
  */
-package ai.djl.ndarray.index;
 
-/** An {@code NDIndexElement} to return all values in a particular dimension. */
-public class NDIndexAll implements NDIndexElement {
-
-    /** {@inheritDoc} */
-    @Override
-    public int getRank() {
-        return 1;
-    }
-}
+/**
+ * Contains classes that represent an index element in a {@link ai.djl.ndarray.NDArray}'s indices.
+ *
+ * <p>Contains the main interface {@link ai.djl.ndarray.index.dim.NDIndexElement} and various
+ * implementations.
+ *
+ * @see ai.djl.ndarray.index.dim.NDIndexElement
+ */
+package ai.djl.ndarray.index.dim;
